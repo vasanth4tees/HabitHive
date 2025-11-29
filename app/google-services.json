@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "351743453000",
+    "project_id": "habithive-7e7eb",
+    "storage_bucket": "habithive-7e7eb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:351743453000:android:abe07829303961e550757d",
+        "android_client_info": {
+          "package_name": "com.example.habithive"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD7EEoGsorsFJtx_aM9byxsBkPMGrGTAxw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
