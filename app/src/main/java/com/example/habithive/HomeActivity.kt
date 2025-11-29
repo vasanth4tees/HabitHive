@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -29,7 +30,12 @@ import androidx.compose.ui.unit.sp
 import com.example.habithive.ui.theme.HabitHiveTheme
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ListenerRegistration
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import androidx.compose.material3.AlertDialog
+
 
 class HomeActivity : ComponentActivity() {
 
@@ -70,12 +76,17 @@ class HomeActivity : ComponentActivity() {
     }
 }
 
+/**
+ * UI model for a habit stored in Firestore.
+ * We also track lastCompletedDate (yyyy-MM-dd) to calculate daily streaks.
+ */
 data class HabitUi(
     val id: String = "",
     val name: String = "",
     val description: String = "",
     val isDoneToday: Boolean = false,
-    val streakDays: Long = 0L
+    val streakDays: Long = 0L,
+    val lastCompletedDate: String? = null
 )
 
 enum class BottomTab {
@@ -96,16 +107,25 @@ fun HomeScreen(
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var selectedTab by remember { mutableStateOf(BottomTab.TODAY) }
-    var showAddDialog by remember { mutableStateOf(false) }
+
+    // 🔁 Dialog state – use rememberSaveable so it survives recomposition
+    var showAddDialog by rememberSaveable { mutableStateOf(false) }
 
     val gradientColors = listOf(
         Color(0xFFFFF7C2),   // light yellow
         Color(0xFFB4D9FF)    // light blue
     )
 
-    // Listen to Firestore changes in this user's habits
-    DisposableEffect(userId) {
+    // Date formatter for daily logic
+    val dateFormatter = remember {
+        SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    }
+    val todayString = remember {
+        dateFormatter.format(Date())
+    }
 
+    // ✅ Listen to Firestore changes in this user's habits (realtime)
+    DisposableEffect(userId) {
         val registration = db.collection("users")
             .document(userId)
             .collection("habits")
@@ -123,7 +143,8 @@ fun HomeScreen(
                             name = doc.getString("name") ?: "",
                             description = doc.getString("description") ?: "",
                             isDoneToday = doc.getBoolean("isDoneToday") ?: false,
-                            streakDays = doc.getLong("streakDays") ?: 0L
+                            streakDays = doc.getLong("streakDays") ?: 0L,
+                            lastCompletedDate = doc.getString("lastCompletedDate")
                         )
                     }
                     habits = list
@@ -136,7 +157,6 @@ fun HomeScreen(
             registration.remove()
         }
     }
-
 
     Scaffold(
         topBar = {
@@ -208,14 +228,54 @@ fun HomeScreen(
                             .collection("habits")
                             .document(habit.id)
 
-                        docRef.update("isDoneToday", !habit.isDoneToday)
-                            .addOnFailureListener {
+                        // ----- Daily streak logic -----
+                        val currentDateStr = todayString
+
+                        // Calculate yesterday string
+                        val cal = Calendar.getInstance()
+                        cal.add(Calendar.DAY_OF_YEAR, -1)
+                        val yesterdayStr = dateFormatter.format(cal.time)
+
+                        val currentlyDone = habit.isDoneToday
+                        val currentStreak = habit.streakDays
+                        val lastDate = habit.lastCompletedDate
+
+                        if (!currentlyDone) {
+                            // Marking as done today
+                            val newStreak = when {
+                                lastDate == currentDateStr -> currentStreak // same day, keep streak
+                                lastDate == yesterdayStr -> currentStreak + 1 // continued streak
+                                else -> 1L // new streak
+                            }
+
+                            docRef.update(
+                                mapOf(
+                                    "isDoneToday" to true,
+                                    "streakDays" to newStreak,
+                                    "lastCompletedDate" to currentDateStr
+                                )
+                            ).addOnFailureListener {
                                 Toast.makeText(
                                     context,
                                     "Failed to update habit",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
+                        } else {
+                            // Unchecking for today – keep streak but mark as not done.
+                            // (You could choose to reduce/reset streak here if you want.)
+                            docRef.update(
+                                mapOf(
+                                    "isDoneToday" to false
+                                )
+                            ).addOnFailureListener {
+                                Toast.makeText(
+                                    context,
+                                    "Failed to update habit",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
                     }
                 )
 
@@ -227,6 +287,7 @@ fun HomeScreen(
                 )
             }
 
+            // ✅ Add Habit dialog – controlled by showAddDialog
             if (showAddDialog) {
                 AddHabitDialog(
                     onDismiss = { showAddDialog = false },
@@ -244,7 +305,8 @@ fun HomeScreen(
                             "name" to name,
                             "description" to desc,
                             "isDoneToday" to false,
-                            "streakDays" to 0L
+                            "streakDays" to 0L,
+                            "lastCompletedDate" to null
                         )
 
                         db.collection("users")
@@ -403,6 +465,14 @@ fun HistoryTabContent(
                                 fontSize = 14.sp,
                                 color = Color(0xFF1A4B7A)
                             )
+                            if (!habit.lastCompletedDate.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Last done: ${habit.lastCompletedDate}",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF555555)
+                                )
+                            }
                         }
                     }
 
@@ -491,7 +561,7 @@ fun HabitCard(
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
-                    text = "Streak: ${habit.streakDays} days 🔥",
+                    text = "Streak: ${habit.streakDays} days ",
                     fontSize = 13.sp,
                     color = Color(0xFF1A4B7A),
                     fontWeight = FontWeight.Medium
