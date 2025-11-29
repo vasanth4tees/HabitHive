@@ -12,6 +12,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,26 +28,37 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.habithive.ui.theme.HabitHiveTheme
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 
 class HomeActivity : ComponentActivity() {
 
     private lateinit var auth: FirebaseAuth
+    private lateinit var db: FirebaseFirestore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         auth = FirebaseAuth.getInstance()
+        db = FirebaseFirestore.getInstance()
 
         // If not logged in, go back to Login
-        if (auth.currentUser == null) {
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
             startActivity(Intent(this, LoginActivity::class.java))
             finish()
             return
         }
 
+        val userId = currentUser.uid
+        val userEmail = currentUser.email ?: "User"
+
         setContent {
             HabitHiveTheme {
                 HomeScreen(
+                    userId = userId,
+                    userEmail = userEmail,
+                    db = db,
                     onLogout = {
                         auth.signOut()
                         startActivity(Intent(this, LoginActivity::class.java))
@@ -57,33 +71,72 @@ class HomeActivity : ComponentActivity() {
 }
 
 data class HabitUi(
-    val id: Int,
-    val name: String,
-    val description: String,
-    var isDoneToday: Boolean,
-    val streakDays: Int
+    val id: String = "",
+    val name: String = "",
+    val description: String = "",
+    val isDoneToday: Boolean = false,
+    val streakDays: Long = 0L
 )
+
+enum class BottomTab {
+    TODAY, HISTORY, PROFILE
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    userId: String,
+    userEmail: String,
+    db: FirebaseFirestore,
     onLogout: () -> Unit
 ) {
     val context = LocalContext.current
 
-    // Temporary dummy list – later this will come from Room DB
-    val habits = remember {
-        mutableStateListOf(
-            HabitUi(1, "Morning Walk", "Walk for 20 minutes", false, 4),
-            HabitUi(2, "Drink Water", "8 glasses a day", true, 10),
-            HabitUi(3, "Read Book", "Read for 15 minutes", false, 2)
-        )
-    }
+    var habits by remember { mutableStateOf<List<HabitUi>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var selectedTab by remember { mutableStateOf(BottomTab.TODAY) }
+    var showAddDialog by remember { mutableStateOf(false) }
 
     val gradientColors = listOf(
         Color(0xFFFFF7C2),   // light yellow
         Color(0xFFB4D9FF)    // light blue
     )
+
+    // Listen to Firestore changes in this user's habits
+    DisposableEffect(userId) {
+
+        val registration = db.collection("users")
+            .document(userId)
+            .collection("habits")
+            .addSnapshotListener { snapshot, e ->
+                if (e != null) {
+                    errorMessage = e.message
+                    isLoading = false
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    val list = snapshot.documents.map { doc ->
+                        HabitUi(
+                            id = doc.id,
+                            name = doc.getString("name") ?: "",
+                            description = doc.getString("description") ?: "",
+                            isDoneToday = doc.getBoolean("isDoneToday") ?: false,
+                            streakDays = doc.getLong("streakDays") ?: 0L
+                        )
+                    }
+                    habits = list
+                    isLoading = false
+                }
+            }
+
+        onDispose {
+            // Remove Firestore listener when composable is destroyed
+            registration.remove()
+        }
+    }
+
 
     Scaffold(
         topBar = {
@@ -103,14 +156,34 @@ fun HomeScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    // Later: navigate to AddHabitActivity
-                    Toast.makeText(context, "Add Habit screen coming soon", Toast.LENGTH_SHORT)
-                        .show()
+            if (selectedTab == BottomTab.TODAY) {
+                FloatingActionButton(
+                    onClick = { showAddDialog = true }
+                ) {
+                    Icon(imageVector = Icons.Default.Add, contentDescription = "Add Habit")
                 }
-            ) {
-                Icon(imageVector = Icons.Default.Add, contentDescription = "Add Habit")
+            }
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = selectedTab == BottomTab.TODAY,
+                    onClick = { selectedTab = BottomTab.TODAY },
+                    icon = { Icon(Icons.Default.Today, contentDescription = "Today") },
+                    label = { Text("Today") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == BottomTab.HISTORY,
+                    onClick = { selectedTab = BottomTab.HISTORY },
+                    icon = { Icon(Icons.Default.History, contentDescription = "History") },
+                    label = { Text("History") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == BottomTab.PROFILE,
+                    onClick = { selectedTab = BottomTab.PROFILE },
+                    icon = { Icon(Icons.Default.Person, contentDescription = "Profile") },
+                    label = { Text("Profile") }
+                )
             }
         }
     ) { innerPadding ->
@@ -123,62 +196,257 @@ fun HomeScreen(
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
 
-            Column(
-                modifier = Modifier.fillMaxSize()
-            ) {
+            when (selectedTab) {
+                BottomTab.TODAY -> TodayTabContent(
+                    userEmail = userEmail,
+                    habits = habits,
+                    isLoading = isLoading,
+                    errorMessage = errorMessage,
+                    onToggleDone = { habit ->
+                        val docRef = db.collection("users")
+                            .document(userId)
+                            .collection("habits")
+                            .document(habit.id)
 
-                // Greeting section
-                Text(
-                    text = "Hello ",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF2D2D2D)
-                )
-
-                Text(
-                    text = "Here are your habits for today:",
-                    fontSize = 16.sp,
-                    fontStyle = FontStyle.Italic,
-                    color = Color(0xFF3D3D3D)
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Simple summary
-                val completedCount = habits.count { it.isDoneToday }
-                val totalCount = habits.size
-
-                Text(
-                    text = "Progress: $completedCount / $totalCount habits done",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1A4B7A)
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Habits list
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(habits, key = { it.id }) { habit ->
-                        HabitCard(
-                            habit = habit,
-                            onToggleDone = {
-                                val index = habits.indexOfFirst { h -> h.id == habit.id }
-                                if (index != -1) {
-                                    val current = habits[index]
-                                    habits[index] = current.copy(
-                                        isDoneToday = !current.isDoneToday
-                                    )
-                                }
+                        docRef.update("isDoneToday", !habit.isDoneToday)
+                            .addOnFailureListener {
+                                Toast.makeText(
+                                    context,
+                                    "Failed to update habit",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
+                    }
+                )
+
+                BottomTab.HISTORY -> HistoryTabContent(habits = habits)
+
+                BottomTab.PROFILE -> ProfileTabContent(
+                    userEmail = userEmail,
+                    onLogout = onLogout
+                )
+            }
+
+            if (showAddDialog) {
+                AddHabitDialog(
+                    onDismiss = { showAddDialog = false },
+                    onSaveHabit = { name, desc ->
+                        if (name.isBlank()) {
+                            Toast.makeText(
+                                context,
+                                "Habit name cannot be empty",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            return@AddHabitDialog
+                        }
+
+                        val habit = hashMapOf(
+                            "name" to name,
+                            "description" to desc,
+                            "isDoneToday" to false,
+                            "streakDays" to 0L
                         )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        db.collection("users")
+                            .document(userId)
+                            .collection("habits")
+                            .add(habit)
+                            .addOnSuccessListener {
+                                Toast.makeText(
+                                    context,
+                                    "Habit added",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                showAddDialog = false
+                            }
+                            .addOnFailureListener {
+                                Toast.makeText(
+                                    context,
+                                    "Failed to add habit",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
                     }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TodayTabContent(
+    userEmail: String,
+    habits: List<HabitUi>,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onToggleDone: (HabitUi) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize()
+    ) {
+
+        // Greeting section
+        Text(
+            text = "Hello, $userEmail ",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color(0xFF2D2D2D)
+        )
+
+        Text(
+            text = "Here are your habits for today:",
+            fontSize = 16.sp,
+            fontStyle = FontStyle.Italic,
+            color = Color(0xFF3D3D3D)
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (isLoading) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
+            }
+            return
+        }
+
+        if (errorMessage != null) {
+            Text(
+                text = "Error: $errorMessage",
+                color = Color.Red
+            )
+            return
+        }
+
+        val completedCount = habits.count { it.isDoneToday }
+        val totalCount = habits.size
+
+        Text(
+            text = "Progress: $completedCount / $totalCount habits done",
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color(0xFF1A4B7A)
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        if (habits.isEmpty()) {
+            Text(
+                text = "No habits yet. Tap + to add one!",
+                fontStyle = FontStyle.Italic,
+                color = Color(0xFF555555)
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(habits, key = { it.id }) { habit ->
+                    HabitCard(
+                        habit = habit,
+                        onToggleDone = { onToggleDone(habit) }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun HistoryTabContent(
+    habits: List<HabitUi>
+) {
+    Column(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Text(
+            text = "History & Streaks",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color(0xFF2D2D2D)
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (habits.isEmpty()) {
+            Text(
+                text = "No habits yet to show history.",
+                fontStyle = FontStyle.Italic,
+                color = Color(0xFF555555)
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(habits, key = { it.id }) { habit ->
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFFFFFFF).copy(alpha = 0.9f)
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Text(
+                                text = habit.name,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Current streak: ${habit.streakDays} days 🔥",
+                                fontSize = 14.sp,
+                                color = Color(0xFF1A4B7A)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ProfileTabContent(
+    userEmail: String,
+    onLogout: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize(),
+        horizontalAlignment = Alignment.Start
+    ) {
+        Text(
+            text = "Profile",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color(0xFF2D2D2D)
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Email:",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            text = userEmail,
+            fontSize = 16.sp,
+            color = Color(0xFF1A4B7A)
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(onClick = onLogout) {
+            Text("Logout")
         }
     }
 }
@@ -223,7 +491,7 @@ fun HabitCard(
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
-                    text = "Streak: ${habit.streakDays} days ",
+                    text = "Streak: ${habit.streakDays} days 🔥",
                     fontSize = 13.sp,
                     color = Color(0xFF1A4B7A),
                     fontWeight = FontWeight.Medium
@@ -246,4 +514,48 @@ fun HabitCard(
             }
         }
     }
+}
+
+@Composable
+fun AddHabitDialog(
+    onDismiss: () -> Unit,
+    onSaveHabit: (String, String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = "Add New Habit")
+        },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Habit name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description (optional)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSaveHabit(name, description) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
