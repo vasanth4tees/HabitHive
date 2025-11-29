@@ -45,8 +45,8 @@ class SignUpActivity : ComponentActivity() {
                 SignUpScreen(
                     auth = auth,
                     onSignUpSuccess = {
-                        // Go to Home after successful sign up
-                        startActivity(Intent(this, HomeActivity::class.java))
+                        // Go to Login after successful sign up
+                        startActivity(Intent(this, LoginActivity::class.java))
                         finish()
                     },
                     onBackToLogin = {
